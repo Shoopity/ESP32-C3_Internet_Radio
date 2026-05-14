@@ -1,0 +1,8 @@
+.pio
+.vscode
+.gcc-flags.json
+*.bin
+*.elf
+libdeps
+node_modules
+.DS_Store
