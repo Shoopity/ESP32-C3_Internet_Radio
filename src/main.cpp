@@ -54,7 +54,7 @@ void setup() {
   // Setup I2S Output
   out = new AudioOutputI2S();
   out->SetPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  out->SetGain(0.5); // Set initial volume (0.0 to 4.0)
+  out->SetGain(0.1); // Set initial volume (0.0 to 4.0)
 
   // Setup the stream source
   file = new AudioFileSourceICYStream(url);
