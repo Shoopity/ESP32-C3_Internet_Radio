@@ -3,11 +3,7 @@
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
 #include <Arduino.h>
-#include <WiFi.h>
-
-// WiFi Credentials - PLEASE UPDATE THESE
-const char *ssid = "WOPR";
-const char *password = "Wouldyoulike2playagame?";
+#include <WiFiManager.h>
 
 // Radio Stream URL (Using HTTP for compatibility)
 const char *url = "http://das-edge63-live365-dal03.cdnstream.com/a43564";
@@ -42,14 +38,22 @@ void setup() {
   delay(2000);
   Serial.println("\n\nESP32-C3 Internet Radio (ESP8266Audio) Starting...");
 
-  // Connect to WiFi
-  Serial.printf("Connecting to %s ", ssid);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  // Captive Portal Setup
+  Serial.println("Starting WiFiManager...");
+  WiFiManager wm;
+  // wm.resetSettings(); // Wipes the saved WiFi memory on boot
+
+  // If it can't connect, it will create an AP named "ESP32_Radio_Config" with
+  // no password
+  bool res = wm.autoConnect("ESP32_Radio_Config");
+
+  if (!res) {
+    Serial.println("Failed to connect or hit timeout");
+    // ESP.restart();
+  } else {
+    // if you get here you have connected to the WiFi
+    Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
   }
-  Serial.println("\nWiFi Connected!");
 
   // Setup I2S Output
   out = new AudioOutputI2S();
@@ -83,18 +87,20 @@ void loop() {
     static int failed_retries = 0;
     Serial.println("Stream error, retrying in 5s...");
     delay(5000);
-    
+
     // Check WiFi connection or force reconnect if we've failed too many times
     if (WiFi.status() != WL_CONNECTED || failed_retries >= 3) {
       if (failed_retries >= 3) {
-          Serial.println("Multiple retries failed (possible DNS issue). Forcing WiFi reset...");
+        Serial.println("Multiple retries failed (possible DNS issue). Forcing "
+                       "WiFi reset...");
       } else {
-          Serial.println("WiFi dropped, reconnecting...");
+        Serial.println("WiFi dropped, reconnecting...");
       }
-      
+
       WiFi.disconnect();
       delay(1000);
-      WiFi.begin(ssid, password);
+      WiFi.begin(); // Using no arguments automatically uses the credentials
+                    // stored by WiFiManager
       int retries = 0;
       while (WiFi.status() != WL_CONNECTED && retries < 20) {
         delay(500);
@@ -105,17 +111,34 @@ void loop() {
       failed_retries = 0; // Reset counter after WiFi bounce
     }
 
-    // Teardown the old broken stream objects (MUST do mp3 first to prevent heap corruption)
-    if (mp3)  { mp3->stop(); delete mp3; mp3 = NULL; }
-    if (buff) { buff->close(); delete buff; buff = NULL; }
-    if (file) { file->close(); delete file; file = NULL; }
-    if (out)  { out->stop(); delete out; out = NULL; }
+    // Teardown the old broken stream objects (MUST do mp3 first to prevent heap
+    // corruption)
+    if (mp3) {
+      mp3->stop();
+      delete mp3;
+      mp3 = NULL;
+    }
+    if (buff) {
+      buff->close();
+      delete buff;
+      buff = NULL;
+    }
+    if (file) {
+      file->close();
+      delete file;
+      file = NULL;
+    }
+    if (out) {
+      out->stop();
+      delete out;
+      out = NULL;
+    }
 
     // Recreate the stream objects and output
     out = new AudioOutputI2S();
     out->SetPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     out->SetGain(0.051); // Keep the user's volume setting
-    
+
     file = new AudioFileSourceICYStream(url);
     file->RegisterMetadataCB(MDCallback, NULL);
     file->RegisterStatusCB(StatusCallback, NULL);
