@@ -2,6 +2,7 @@
 #include "AudioFileSourceICYStream.h"
 #include "AudioGeneratorAAC.h"
 #include "AudioGeneratorMP3.h"
+#include "AudioGeneratorNoise.h"
 #include "AudioOutputI2S.h"
 #include <Arduino.h>
 #include <Preferences.h>
@@ -23,6 +24,7 @@
 RotaryEncoder encoder(PIN_IN1, PIN_IN2, RotaryEncoder::LatchMode::TWO03);
 
 AudioGenerator *decoder = NULL;
+AudioGeneratorNoise *noise = NULL;
 AudioFileSourceICYStream *file = NULL;
 AudioFileSourceBuffer *buff = NULL;
 AudioOutputI2S *out = NULL;
@@ -80,6 +82,7 @@ void turnOffRadio(bool keep_i2s_alive) {
         "\n--- TUNING MODE: Tearing down stream, keeping speaker alive ---");
   }
 
+  // Stop the MP3 stream
   if (decoder) {
     decoder->stop();
     delete decoder;
@@ -97,6 +100,12 @@ void turnOffRadio(bool keep_i2s_alive) {
   }
 
   if (!keep_i2s_alive) {
+    // Also stop noise generator and I2S output
+    if (noise) {
+      noise->stop();
+      delete noise;
+      noise = NULL;
+    }
     if (out) {
       out->stop();
       delete out;
@@ -104,8 +113,17 @@ void turnOffRadio(bool keep_i2s_alive) {
     }
     is_tuning = false;
   } else {
-    if (out) {
-      out->SetRate(11025); // Warm, vintage crackle sample rate
+    // Start noise generator so the speaker produces static
+    if (!noise) {
+      noise = new AudioGeneratorNoise(
+          0.10f); // 10% amplitude — audible but not harsh
+      if (!noise->begin(NULL, out)) {
+        Serial.println("Warning: Failed to start noise generator");
+        delete noise;
+        noise = NULL;
+      } else {
+        Serial.println("Noise generator started");
+      }
     }
     is_tuning = true;
   }
@@ -128,6 +146,13 @@ void turnOnRadio() {
     out->stop();
     delete out;
     out = NULL;
+  }
+
+  // Stop noise generator before starting the MP3 stream
+  if (noise) {
+    noise->stop();
+    delete noise;
+    noise = NULL;
   }
 
   if (!out) {
