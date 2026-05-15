@@ -45,6 +45,7 @@ const char *DIAL_LABELS_OUT[6] = {"108", "103", "100", "96", "92", "88"};
 const char *DIAL_LABELS_IN[8] = {"120", "110", "100", "90",
                                  "80",  "70",  "60",  "54"};
 float view_angle = 90.0f;
+float view_phase = 0.0f; // Persistent phase for smooth oscillation
 float last_drawn_angle = -1.0f;
 unsigned long display_update_timer = 0;
 
@@ -141,7 +142,7 @@ void drawDisplay() {
   display.setFont();
 
   // --- Fixed Needle (Thin Line all the way down) ---
-  display.drawLine(32, 0, 32, 127, SSD1306_BLACK);
+  // display.drawLine(32, 0, 32, 127, SSD1306_BLACK);
 
   display.display();
   last_drawn_angle = view_angle;
@@ -359,6 +360,11 @@ void setup() {
 
   // Start the radio if volume > 0
   if (current_volume > 0) {
+    // Start at a random visual position for the aesthetic
+    view_phase = (float)random(0, 628) / 100.0f;
+    view_angle = 90.0f + 60.0f * sinf(view_phase);
+    if (display_ok)
+      drawDisplay(); // Show it immediately on boot
     turnOnRadio();
   }
 }
@@ -472,22 +478,24 @@ void loop() {
   // --- Animation and Display Updates ---
   bool needs_draw = false;
   if (is_tuning) {
-    // Rapid oscillation when lost/tuning
-    float t = (float)millis() / 1000.0f;
-    view_angle = 90.0f + 60.0f * sinf(t);
     needs_draw = true;
-  } else if (is_playing) {
-    float target = STATION_ANGLES[current_station_index];
-    if (fabsf(target - view_angle) > 0.1f) {
-      view_angle += (target - view_angle) * 0.15f;
-      needs_draw = true;
-    }
   }
+  // If is_playing, we just stay wherever we landed.
 
   if (needs_draw) {
     unsigned long disp_ms = is_tuning ? 50UL : 100UL;
     if (millis() - display_update_timer > disp_ms) {
       display_update_timer = millis();
+
+      // Update animation phase here (tied to frame rate)
+      if (is_tuning) {
+        view_phase += 0.05f;
+        // Wrap at 2*PI to prevent precision loss over time
+        if (view_phase > 6.28318f)
+          view_phase -= 6.28318f;
+        view_angle = 90.0f + 60.0f * sinf(view_phase);
+      }
+
       drawDisplay();
     }
   }
