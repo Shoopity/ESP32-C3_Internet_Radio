@@ -138,8 +138,27 @@ void drawDisplay() {
     }
   }
 
-  // Reset font for other UI elements if necessary (or just keep it)
-  display.setFont();
+  // --- Ticks ---
+  // Draw small decorative ticks every 4 degrees to fill the space between
+  // numbers
+  for (float a = 25.0f; a <= 155.0f; a += 4.0f) {
+    float dist = fabsf(a - view_angle);
+    if (dist > window_range)
+      continue;
+
+    int x1, y1, x2, y2;
+    // Outer ticks
+    arcPt(a, view_angle, ARC_R - 3, x1, y1);
+    arcPt(a, view_angle, ARC_R - 8, x2, y2);
+    if (x1 > 0 && x1 < 64)
+      display.drawLine(x1, y1, x2, y2, SSD1306_BLACK);
+
+    // Inner ticks
+    arcPt(a, view_angle, ARC_R - 32, x1, y1);
+    arcPt(a, view_angle, ARC_R - 37, x2, y2);
+    if (x1 > 0 && x1 < 64)
+      display.drawLine(x1, y1, x2, y2, SSD1306_BLACK);
+  }
 
   // --- Fixed Needle (Thin Line all the way down) ---
   // display.drawLine(32, 0, 32, 127, SSD1306_BLACK);
@@ -163,23 +182,20 @@ void StatusCallback(void *cbData, int code, const char *string) {
   Serial.flush();
 }
 
-void turnOffRadio(bool keep_i2s_alive) {
-  if (!is_playing && !is_tuning)
-    return; // already fully off
-
-  if (!keep_i2s_alive) {
-    Serial.println("\n--- SOFTWARE OFF: Tearing down everything ---");
-  } else {
-    Serial.println(
-        "\n--- TUNING MODE: Tearing down stream, keeping speaker alive ---");
-  }
-
-  // Stop the MP3 stream
+void cleanupAudio(bool includeI2S) {
+  // 1. Stop and delete generators first (they depend on the buffers/output)
   if (decoder) {
-    decoder->stop();
+    if (decoder->isRunning()) decoder->stop();
     delete decoder;
     decoder = NULL;
   }
+  if (noise) {
+    if (noise->isRunning()) noise->stop();
+    delete noise;
+    noise = NULL;
+  }
+
+  // 2. Stop and delete buffers/sources
   if (buff) {
     buff->close();
     delete buff;
@@ -191,24 +207,35 @@ void turnOffRadio(bool keep_i2s_alive) {
     file = NULL;
   }
 
-  if (!keep_i2s_alive) {
-    // Also stop noise generator and I2S output
-    if (noise) {
-      noise->stop();
-      delete noise;
-      noise = NULL;
-    }
-    if (out) {
-      out->stop();
+  // 3. Stop and delete I2S output
+  // We've found that on ESP32-C3, it's safer to fully release the driver
+  // but we must give it a moment to 'breathe' before re-installing.
+  if (out) {
+    out->stop();
+    if (includeI2S) {
       delete out;
       out = NULL;
+      delay(50); // Critical: give hardware time to release I2S peripheral
     }
+  }
+}
+
+void turnOffRadio(bool keep_i2s_alive) {
+  if (!is_playing && !is_tuning) return; 
+
+  if (!keep_i2s_alive) {
+    Serial.println("\n--- SOFTWARE OFF: Tearing down everything ---");
+    cleanupAudio(true); // Full wipe
     is_tuning = false;
   } else {
+    Serial.println("\n--- TUNING MODE: Tearing down stream, keeping speaker alive ---");
+    cleanupAudio(false); // Stop stream, keep I2S
+    
     // Start noise generator so the speaker produces static
-    if (!noise) {
-      noise = new AudioGeneratorNoise(
-          0.10f); // 10% amplitude — audible but not harsh
+    if (!noise && out) {
+      noise = new AudioGeneratorNoise(0.10f);
+      // If 'out' was already running, begin() might still trigger a warning, 
+      // but it's much less likely to crash if we haven't uninstalled the driver.
       if (!noise->begin(NULL, out)) {
         Serial.println("Warning: Failed to start noise generator");
         delete noise;
@@ -223,39 +250,30 @@ void turnOffRadio(bool keep_i2s_alive) {
 }
 
 void turnOnRadio() {
-  if (is_playing)
-    return;
+  if (is_playing) return;
   Serial.println("\n--- SOFTWARE ON: Starting audio stream ---");
 
-  // Find a valid station to play (skip empty ones)
-  // For now, it just tries to play current_station_index.
-  // If it's empty, it will drop to tuning mode.
   char *target_url = stream_urls[current_station_index];
-
-  // CRITICAL FIX: We must delete the old I2S object before creating a new one
-  // Otherwise the ESP32 throws "register I2S object to platform failed"
-  if (out) {
-    out->stop();
-    delete out;
-    out = NULL;
+  if (strlen(target_url) == 0) {
+    Serial.println("Error: Station URL is empty.");
+    turnOffRadio(current_volume > 0);
+    return;
   }
 
-  // Stop noise generator before starting the MP3 stream
-  if (noise) {
-    noise->stop();
-    delete noise;
-    noise = NULL;
-  }
+  // To prevent "I2S register failed", we do a full clean including I2S, 
+  // then recreate it fresh with the delay in cleanupAudio().
+  cleanupAudio(true); 
 
   if (!out) {
     out = new AudioOutputI2S();
     out->SetPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
   }
 
-  // Scale 0-100 to 0.0-2.0 gain
+  // Set gain
   float gain = (float)current_volume / 100.0 * 2.0;
   out->SetGain(gain);
 
+  // Setup stream pipeline
   file = new AudioFileSourceICYStream(target_url);
   file->RegisterMetadataCB(MDCallback, NULL);
   file->RegisterStatusCB(StatusCallback, NULL);
@@ -263,21 +281,21 @@ void turnOnRadio() {
   buff = new AudioFileSourceBuffer(file, 16384);
   buff->RegisterStatusCB(StatusCallback, NULL);
 
-  // Basic stream format detection
+  // Auto-detect format
   String urlStr = String(target_url);
   urlStr.toLowerCase();
-  if (urlStr.indexOf("aac") > 0 || urlStr.indexOf("wzph") > 0) {
-    Serial.println("Auto-detected AAC stream format.");
+  if (urlStr.indexOf("aac") >= 0 || urlStr.indexOf("wzph") >= 0) {
     decoder = new AudioGeneratorAAC();
   } else {
     decoder = new AudioGeneratorMP3();
   }
 
   Serial.printf("Starting stream: %s\n", target_url);
-  if (strlen(target_url) == 0 || !decoder->begin(buff, out)) {
-    Serial.println("Error: Could not start Decoder (or URL is empty)");
-    turnOffRadio(current_volume > 0); // Drop into tuning mode if volume > 0
-    reconnect_timer = millis();       // Start reconnect timer
+  if (!decoder->begin(buff, out)) {
+    Serial.println("Error: Could not start Decoder");
+    cleanupAudio(false); // Clean up the failed attempt
+    turnOffRadio(current_volume > 0); // Re-trigger tuning mode
+    reconnect_timer = millis();
   } else {
     is_playing = true;
     is_tuning = false;
