@@ -1,6 +1,7 @@
 #include "AudioFileSourceBuffer.h"
 #include "AudioFileSourceICYStream.h"
 #include "AudioGeneratorMP3.h"
+#include "AudioGeneratorNoise.h"
 #include "AudioOutputI2S.h"
 #include <Arduino.h>
 #include <WiFiManager.h>
@@ -21,6 +22,7 @@ const char *url = "http://das-edge63-live365-dal03.cdnstream.com/a43564";
 RotaryEncoder encoder(PIN_IN1, PIN_IN2, RotaryEncoder::LatchMode::TWO03);
 
 AudioGeneratorMP3 *mp3 = NULL;
+AudioGeneratorNoise *noise = NULL;
 AudioFileSourceICYStream *file = NULL;
 AudioFileSourceBuffer *buff = NULL;
 AudioOutputI2S *out = NULL;
@@ -58,16 +60,27 @@ void turnOffRadio(bool keep_i2s_alive) {
     Serial.println("\n--- TUNING MODE: Tearing down stream, keeping speaker alive ---");
   }
 
+  // Stop the MP3 stream
   if (mp3) { mp3->stop(); delete mp3; mp3 = NULL; }
   if (buff) { buff->close(); delete buff; buff = NULL; }
   if (file) { file->close(); delete file; file = NULL; }
   
   if (!keep_i2s_alive) {
+    // Also stop noise generator and I2S output
+    if (noise) { noise->stop(); delete noise; noise = NULL; }
     if (out) { out->stop(); delete out; out = NULL; }
     is_tuning = false;
   } else {
-    if (out) {
-      out->SetRate(11025); // Warm, vintage crackle sample rate
+    // Start noise generator so the speaker produces static
+    if (!noise) {
+      noise = new AudioGeneratorNoise(0.10f); // 10% amplitude — audible but not harsh
+      if (!noise->begin(NULL, out)) {
+        Serial.println("Warning: Failed to start noise generator");
+        delete noise;
+        noise = NULL;
+      } else {
+        Serial.println("Noise generator started");
+      }
     }
     is_tuning = true;
   }
@@ -77,6 +90,9 @@ void turnOffRadio(bool keep_i2s_alive) {
 void turnOnRadio() {
   if (is_playing) return;
   Serial.println("\n--- SOFTWARE ON: Starting audio stream ---");
+
+  // Stop noise generator before starting the MP3 stream
+  if (noise) { noise->stop(); delete noise; noise = NULL; }
   
   if (!out) {
     out = new AudioOutputI2S();
@@ -176,13 +192,9 @@ void loop() {
       }
     }
   } else if (is_tuning) {
-    // 3. Play Analog Static
-    if (out) {
-      int16_t samples[2];
-      // Generate some warm noise. Scaling down by 8 prevents it from being deafening.
-      samples[0] = (random(65535) - 32768) / 8; 
-      samples[1] = samples[0];
-      out->ConsumeSample(samples);
+    // 3. Play Analog Static via proper AudioGenerator pipeline
+    if (noise && noise->isRunning()) {
+      noise->loop();
     }
 
     // 4. Non-Blocking Reconnect
