@@ -4,10 +4,13 @@
 #include "AudioGeneratorMP3.h"
 #include "AudioGeneratorNoise.h"
 #include "AudioOutputI2S.h"
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 #include <Arduino.h>
 #include <Preferences.h>
 #include <RotaryEncoder.h>
 #include <WiFiManager.h>
+#include <Wire.h>
 
 // I2S Pins for NS4168
 #define I2S_BCLK 1
@@ -20,6 +23,27 @@
 
 // Hardware BOOT button for factory reset
 #define PIN_BOOT 9
+
+// SSD1306 OLED Display (I2C)
+#define OLED_SDA 6
+#define OLED_SCL 7
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define OLED_ADDRESS 0x3C
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+bool display_ok = false;
+
+// Cathedral radio tuner window display state (Portrait 64x128)
+const int   DIAL_CX    = 32;   // Horizontal center
+const int   DIAL_CY    = 180;  // Pivot below screen
+const int   ARC_R      = 160;  // Radius for the wheel
+const float STATION_ANGLES[5] = {60.0f, 75.0f, 90.0f, 105.0f, 120.0f};
+const char *DIAL_LABELS[5]    = {"54", "70", "90", "110", "130"};
+float view_angle = 90.0f;
+float last_drawn_angle = -1.0f;
+unsigned long display_update_timer = 0;
 
 RotaryEncoder encoder(PIN_IN1, PIN_IN2, RotaryEncoder::LatchMode::TWO03);
 
@@ -56,7 +80,78 @@ void saveConfigCallback() {
 // Interrupt routine for the encoder
 IRAM_ATTR void checkPosition() { encoder.tick(); }
 
-// Callback for ICY metadata
+// Helper: convert wheel angle to screen x,y relative to the current view_angle
+static void arcPt(float a_deg, float v_deg, int r, int &sx, int &sy) {
+  float a_screen = 90.0f + (a_deg - v_deg);
+  float rad = a_screen * (float)M_PI / 180.0f;
+  sx = DIAL_CX + (int)(r * cosf(rad));
+  sy = DIAL_CY - (int)(r * sinf(rad));
+}
+
+void drawDisplay() {
+  if (!display_ok) return;
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  // --- Draw the rotating scale ---
+  float window_range = 30.0f; // degrees visible
+
+  // Main arc line
+  {
+    int px, py, cx, cy;
+    arcPt(view_angle - window_range, view_angle, ARC_R, px, py);
+    for (float a = view_angle - window_range + 2; a <= view_angle + window_range; a += 2) {
+      arcPt(a, view_angle, ARC_R, cx, cy);
+      if (cx >= 0 && cx < 64 && cy >= 0 && cy < 128) {
+        display.drawLine(px, py, cx, cy, SSD1306_WHITE);
+      }
+      px = cx; py = cy;
+    }
+  }
+
+  // Ticks and labels
+  display.setTextSize(1);
+  for (float a = 40.0f; a <= 140.0f; a += 3.0f) {
+    int station_idx = -1;
+    for (int i = 0; i < 5; i++) {
+      if (fabsf(STATION_ANGLES[i] - a) < 1.0f) {
+        station_idx = i;
+        break;
+      }
+    }
+
+    int x1, y1, x2, y2;
+    if (station_idx != -1) {
+      arcPt(a, view_angle, ARC_R - 10, x1, y1);
+      arcPt(a, view_angle, ARC_R + 10, x2, y2);
+      
+      int lx, ly;
+      arcPt(a, view_angle, ARC_R - 22, lx, ly);
+      
+      if (lx > 4 && lx < 60 && ly > 4 && ly < 120) {
+        display.setCursor(lx - 6, ly - 4);
+        display.print(DIAL_LABELS[station_idx]);
+      }
+    } else {
+      arcPt(a, view_angle, ARC_R - 4, x1, y1);
+      arcPt(a, view_angle, ARC_R + 4, x2, y2);
+    }
+
+    if (x1 >= 0 && x1 < 64 && y1 >= 0 && y1 < 128 &&
+        x2 >= 0 && x2 < 64 && y2 >= 0 && y2 < 128) {
+      display.drawLine(x1, y1, x2, y2, SSD1306_WHITE);
+    }
+  }
+
+  // --- Fixed Pointer (Needle) ---
+  display.drawLine(32, 10, 32, 30, SSD1306_WHITE);
+  display.fillTriangle(28, 10, 36, 10, 32, 18, SSD1306_WHITE);
+
+  display.display();
+  last_drawn_angle = view_angle;
+}
+
+// Callback for ICY metadata (log only — display no longer shows track info)
 void MDCallback(void *cbData, const char *type, bool isUnicode,
                 const char *string) {
   (void)cbData;
@@ -197,6 +292,19 @@ void setup() {
   delay(2000);
   Serial.println("\n\nESP32-C3 Internet Radio Starting...");
 
+  // Init OLED display
+  Wire.begin(OLED_SDA, OLED_SCL);
+  Wire.setClock(400000); // Fast I2C for smoother animation
+  if (display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
+    display_ok = true;
+    display.setRotation(1); // Portrait mode
+    display.clearDisplay();
+    display.display();
+    Serial.println("SSD1306 display OK");
+  } else {
+    Serial.println("WARNING: SSD1306 init failed. Check wiring.");
+  }
+
   // Setup BOOT button input
   pinMode(PIN_BOOT, INPUT_PULLUP);
 
@@ -320,14 +428,9 @@ void loop() {
       }
     }
   } else if (is_tuning) {
-    // 4. Play Analog Static
-    if (out) {
-      int16_t samples[2];
-      // Generate some warm noise. Scaling down by 8 prevents it from being
-      // deafening.
-      samples[0] = (random(65535) - 32768) / 8;
-      samples[1] = samples[0];
-      out->ConsumeSample(samples);
+    // 4. Play Analog Static via proper AudioGenerator pipeline
+    if (noise && noise->isRunning()) {
+      noise->loop();
     }
 
     // 5. Non-Blocking Reconnect
@@ -366,6 +469,29 @@ void loop() {
       } else {
         failed_retries = 0;
       }
+    }
+  }
+
+  // --- Animation and Display Updates ---
+  bool needs_draw = false;
+  if (is_tuning) {
+    // Rapid oscillation when lost/tuning
+    float t = (float)millis() / 500.0f;
+    view_angle = 90.0f + 60.0f * sinf(t);
+    needs_draw = true;
+  } else if (is_playing) {
+    float target = STATION_ANGLES[current_station_index];
+    if (fabsf(target - view_angle) > 0.1f) {
+      view_angle += (target - view_angle) * 0.15f;
+      needs_draw = true;
+    }
+  }
+
+  if (needs_draw) {
+    unsigned long disp_ms = is_tuning ? 50UL : 100UL;
+    if (millis() - display_update_timer > disp_ms) {
+      display_update_timer = millis();
+      drawDisplay();
     }
   }
 }
