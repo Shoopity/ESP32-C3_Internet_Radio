@@ -7,6 +7,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
+#include <Fonts/FreeSansBold9pt7b.h>
 #include <Preferences.h>
 #include <RotaryEncoder.h>
 #include <WiFiManager.h>
@@ -36,11 +37,13 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 bool display_ok = false;
 
 // Cathedral radio tuner window display state (Portrait 64x128)
-const int   DIAL_CX    = 32;   // Horizontal center
-const int   DIAL_CY    = 180;  // Pivot below screen
-const int   ARC_R      = 160;  // Radius for the wheel
-const float STATION_ANGLES[5] = {60.0f, 75.0f, 90.0f, 105.0f, 120.0f};
-const char *DIAL_LABELS[5]    = {"54", "70", "90", "110", "130"};
+const int DIAL_CX = 32;  // Horizontal center
+const int DIAL_CY = 180; // Pivot below screen
+const int ARC_R = 160;   // Radius for the wheel
+const float STATION_ANGLES[5] = {40.0f, 65.0f, 90.0f, 115.0f, 140.0f};
+const char *DIAL_LABELS_OUT[6] = {"108", "103", "100", "96", "92", "88"};
+const char *DIAL_LABELS_IN[8] = {"120", "110", "100", "90",
+                                 "80",  "70",  "60",  "54"};
 float view_angle = 90.0f;
 float last_drawn_angle = -1.0f;
 unsigned long display_update_timer = 0;
@@ -53,7 +56,7 @@ AudioFileSourceICYStream *file = NULL;
 AudioFileSourceBuffer *buff = NULL;
 AudioOutputI2S *out = NULL;
 
-int current_volume = 10; // 0 to 100
+int current_volume = 2; // 0 to 100
 bool is_playing = false;
 bool is_tuning = false;
 unsigned long reconnect_timer = 0;
@@ -89,63 +92,56 @@ static void arcPt(float a_deg, float v_deg, int r, int &sx, int &sy) {
 }
 
 void drawDisplay() {
-  if (!display_ok) return;
+  if (!display_ok)
+    return;
+
+  // Invert colors: White background, Black text
   display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
+  display.fillScreen(SSD1306_WHITE);
+  display.setTextColor(SSD1306_BLACK);
+  display.setTextWrap(
+      false); // CRITICAL: Prevents numbers from 'wrapping' to the other side
 
-  // --- Draw the rotating scale ---
-  float window_range = 30.0f; // degrees visible
+  // Use a smooth, proportional font instead of blocky pixels
+  display.setFont(&FreeSansBold9pt7b);
+  float window_range = 35.0f;
 
-  // Main arc line
-  {
-    int px, py, cx, cy;
-    arcPt(view_angle - window_range, view_angle, ARC_R, px, py);
-    for (float a = view_angle - window_range + 2; a <= view_angle + window_range; a += 2) {
-      arcPt(a, view_angle, ARC_R, cx, cy);
-      if (cx >= 0 && cx < 64 && cy >= 0 && cy < 128) {
-        display.drawLine(px, py, cx, cy, SSD1306_WHITE);
-      }
-      px = cx; py = cy;
+  // --- Outer Row (6 Labels) ---
+  for (int i = 0; i < 6; i++) {
+    float a = 50.0f + (i * 16.0f);
+    float dist = fabsf(a - view_angle);
+    if (dist > window_range)
+      continue;
+
+    int lx, ly;
+    arcPt(a, view_angle, ARC_R - 10, lx, ly);
+    if (lx > 0 && lx < 64 && ly > 0 && ly < 128) {
+      // NOTE: Custom fonts use baseline for Y, so we add 4 to center roughly
+      display.setCursor(lx - 12, ly + 4);
+      display.print(DIAL_LABELS_OUT[i]);
     }
   }
 
-  // Ticks and labels
-  display.setTextSize(1);
-  for (float a = 40.0f; a <= 140.0f; a += 3.0f) {
-    int station_idx = -1;
-    for (int i = 0; i < 5; i++) {
-      if (fabsf(STATION_ANGLES[i] - a) < 1.0f) {
-        station_idx = i;
-        break;
-      }
-    }
+  // --- Inner Row (8 Labels) ---
+  for (int i = 0; i < 8; i++) {
+    float a = 35.0f + (i * 15.0f);
+    float dist = fabsf(a - view_angle);
+    if (dist > window_range)
+      continue;
 
-    int x1, y1, x2, y2;
-    if (station_idx != -1) {
-      arcPt(a, view_angle, ARC_R - 10, x1, y1);
-      arcPt(a, view_angle, ARC_R + 10, x2, y2);
-      
-      int lx, ly;
-      arcPt(a, view_angle, ARC_R - 22, lx, ly);
-      
-      if (lx > 4 && lx < 60 && ly > 4 && ly < 120) {
-        display.setCursor(lx - 6, ly - 4);
-        display.print(DIAL_LABELS[station_idx]);
-      }
-    } else {
-      arcPt(a, view_angle, ARC_R - 4, x1, y1);
-      arcPt(a, view_angle, ARC_R + 4, x2, y2);
-    }
-
-    if (x1 >= 0 && x1 < 64 && y1 >= 0 && y1 < 128 &&
-        x2 >= 0 && x2 < 64 && y2 >= 0 && y2 < 128) {
-      display.drawLine(x1, y1, x2, y2, SSD1306_WHITE);
+    int lx, ly;
+    arcPt(a, view_angle, ARC_R - 40, lx, ly);
+    if (lx > 0 && lx < 64 && ly > 0 && ly < 128) {
+      display.setCursor(lx - 12, ly + 4);
+      display.print(DIAL_LABELS_IN[i]);
     }
   }
 
-  // --- Fixed Pointer (Needle) ---
-  display.drawLine(32, 10, 32, 30, SSD1306_WHITE);
-  display.fillTriangle(28, 10, 36, 10, 32, 18, SSD1306_WHITE);
+  // Reset font for other UI elements if necessary (or just keep it)
+  display.setFont();
+
+  // --- Fixed Needle (Thin Line all the way down) ---
+  display.drawLine(32, 0, 32, 127, SSD1306_BLACK);
 
   display.display();
   last_drawn_angle = view_angle;
@@ -298,6 +294,7 @@ void setup() {
   if (display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
     display_ok = true;
     display.setRotation(1); // Portrait mode
+    display.setTextWrap(false);
     display.clearDisplay();
     display.display();
     Serial.println("SSD1306 display OK");
@@ -476,7 +473,7 @@ void loop() {
   bool needs_draw = false;
   if (is_tuning) {
     // Rapid oscillation when lost/tuning
-    float t = (float)millis() / 500.0f;
+    float t = (float)millis() / 1000.0f;
     view_angle = 90.0f + 60.0f * sinf(t);
     needs_draw = true;
   } else if (is_playing) {
