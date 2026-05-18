@@ -44,12 +44,16 @@ const float STATION_ANGLES[5] = {40.0f, 65.0f, 90.0f, 115.0f, 140.0f};
 const char *DIAL_LABELS_OUT[6] = {"108", "103", "100", "96", "92", "88"};
 const char *DIAL_LABELS_IN[8] = {"120", "110", "100", "90",
                                  "80",  "70",  "60",  "54"};
+const int VOLUME_STEPS[21] = {
+    0, 1, 2, 4, 6, 9, 13, 18, 24, 32, 42, 
+    53, 64, 74, 82, 88, 93, 96, 98, 99, 100
+};
 float view_angle = 90.0f;
 float view_phase = 0.0f; // Persistent phase for smooth oscillation
 float last_drawn_angle = -1.0f;
 unsigned long display_update_timer = 0;
 
-RotaryEncoder encoder(PIN_IN1, PIN_IN2, RotaryEncoder::LatchMode::TWO03);
+RotaryEncoder encoder(PIN_IN2, PIN_IN1, RotaryEncoder::LatchMode::FOUR3);
 
 AudioGenerator *decoder = NULL;
 AudioGeneratorNoise *noise = NULL;
@@ -57,7 +61,7 @@ AudioFileSourceICYStream *file = NULL;
 AudioFileSourceBuffer *buff = NULL;
 AudioOutputI2S *out = NULL;
 
-int current_volume = 2; // 0 to 100
+int current_volume = 10; // Default startup volume (0 to 100)
 bool is_playing = false;
 bool is_tuning = false;
 unsigned long reconnect_timer = 0;
@@ -185,12 +189,14 @@ void StatusCallback(void *cbData, int code, const char *string) {
 void cleanupAudio(bool includeI2S) {
   // 1. Stop and delete generators first (they depend on the buffers/output)
   if (decoder) {
-    if (decoder->isRunning()) decoder->stop();
+    if (decoder->isRunning())
+      decoder->stop();
     delete decoder;
     decoder = NULL;
   }
   if (noise) {
-    if (noise->isRunning()) noise->stop();
+    if (noise->isRunning())
+      noise->stop();
     delete noise;
     noise = NULL;
   }
@@ -221,21 +227,24 @@ void cleanupAudio(bool includeI2S) {
 }
 
 void turnOffRadio(bool keep_i2s_alive) {
-  if (!is_playing && !is_tuning) return; 
+  if (!is_playing && !is_tuning)
+    return;
 
   if (!keep_i2s_alive) {
-    Serial.println("\n--- SOFTWARE OFF: Tearing down everything ---");
+    Serial.println("\r\n--- SOFTWARE OFF: Tearing down everything ---");
     cleanupAudio(true); // Full wipe
     is_tuning = false;
   } else {
-    Serial.println("\n--- TUNING MODE: Tearing down stream, keeping speaker alive ---");
+    Serial.println(
+        "\r\n--- TUNING MODE: Tearing down stream, keeping speaker alive ---");
     cleanupAudio(false); // Stop stream, keep I2S
-    
+
     // Start noise generator so the speaker produces static
     if (!noise && out) {
       noise = new AudioGeneratorNoise(0.10f);
-      // If 'out' was already running, begin() might still trigger a warning, 
-      // but it's much less likely to crash if we haven't uninstalled the driver.
+      // If 'out' was already running, begin() might still trigger a warning,
+      // but it's much less likely to crash if we haven't uninstalled the
+      // driver.
       if (!noise->begin(NULL, out)) {
         Serial.println("Warning: Failed to start noise generator");
         delete noise;
@@ -250,8 +259,9 @@ void turnOffRadio(bool keep_i2s_alive) {
 }
 
 void turnOnRadio() {
-  if (is_playing) return;
-  Serial.println("\n--- SOFTWARE ON: Starting audio stream ---");
+  if (is_playing)
+    return;
+  Serial.println("\r\n--- SOFTWARE ON: Starting audio stream ---");
 
   char *target_url = stream_urls[current_station_index];
   if (strlen(target_url) == 0) {
@@ -260,9 +270,9 @@ void turnOnRadio() {
     return;
   }
 
-  // To prevent "I2S register failed", we do a full clean including I2S, 
+  // To prevent "I2S register failed", we do a full clean including I2S,
   // then recreate it fresh with the delay in cleanupAudio().
-  cleanupAudio(true); 
+  cleanupAudio(true);
 
   if (!out) {
     out = new AudioOutputI2S();
@@ -290,10 +300,10 @@ void turnOnRadio() {
     decoder = new AudioGeneratorMP3();
   }
 
-  Serial.printf("Starting stream: %s\n", target_url);
+  Serial.printf("Starting stream: %s\r\n", target_url);
   if (!decoder->begin(buff, out)) {
     Serial.println("Error: Could not start Decoder");
-    cleanupAudio(false); // Clean up the failed attempt
+    cleanupAudio(false);              // Clean up the failed attempt
     turnOffRadio(current_volume > 0); // Re-trigger tuning mode
     reconnect_timer = millis();
   } else {
@@ -305,7 +315,7 @@ void turnOnRadio() {
 void setup() {
   Serial.begin(115200);
   delay(2000);
-  Serial.println("\n\nESP32-C3 Internet Radio Starting...");
+  Serial.println("\r\nESP32-C3 Internet Radio Starting...");
 
   // Init OLED display
   Wire.begin(OLED_SDA, OLED_SCL);
@@ -327,10 +337,26 @@ void setup() {
   // Setup Rotary Encoder
   attachInterrupt(digitalPinToInterrupt(PIN_IN1), checkPosition, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_IN2), checkPosition, CHANGE);
-  encoder.setPosition(current_volume);
+  encoder.setPosition(current_volume / 5); // Initialize in steps of 5% (0 to 20 clicks)
 
-  // Load custom URLs from Memory
+  // Load custom URLs and volume from Memory
   preferences.begin("radio", false);
+  current_volume = preferences.getInt("volume", 10); // Load saved volume, default to 10
+  if (current_volume < 0 || current_volume > 100) current_volume = 10;
+  
+  // Find the closest step in the lookup table to set the encoder starting position
+  int best_step = 2; // Default to a low step
+  int min_diff = 999;
+  for (int i = 0; i <= 20; i++) {
+    int diff = abs(VOLUME_STEPS[i] - current_volume);
+    if (diff < min_diff) {
+      min_diff = diff;
+      best_step = i;
+    }
+  }
+  encoder.setPosition(best_step);
+  current_volume = VOLUME_STEPS[best_step]; // Snap to exact curve value
+
   for (int i = 0; i < 5; i++) {
     String key = "url" + String(i);
     String saved_url = preferences.getString(key.c_str(), "");
@@ -363,7 +389,7 @@ void setup() {
   if (!res) {
     Serial.println("Failed to connect or hit timeout");
   } else {
-    Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
+    Serial.println("\r\nWiFi Connected! IP: " + WiFi.localIP().toString());
 
     // Save URLs if they were changed in the portal
     if (shouldSaveConfig) {
@@ -397,7 +423,7 @@ void loop() {
       boot_press_start = millis();
     } else if (millis() - boot_press_start > 3000) {
       Serial.println(
-          "\n[!] BOOT button held. Wiping WiFi and Station config...");
+          "\r\n[!] BOOT button held. Wiping WiFi and Station config...");
       turnOffRadio(false);
       wm.resetSettings();
       preferences.clear();
@@ -410,20 +436,25 @@ void loop() {
 
   // 2. Handle Encoder Input
   encoder.tick(); // Backup check
-  int newPos = encoder.getPosition();
-
-  // Bound the volume between 0 and 100
-  if (newPos < 0) {
+  int clickPos = encoder.getPosition();
+ 
+  // Bound the clicks between 0 and 20 (representing 0% to 100% in 5% steps)
+  if (clickPos < 0) {
     encoder.setPosition(0);
-    newPos = 0;
-  } else if (newPos > 100) {
-    encoder.setPosition(100);
-    newPos = 100;
+    clickPos = 0;
+  } else if (clickPos > 20) {
+    encoder.setPosition(20);
+    clickPos = 20;
   }
-
+ 
+  int newPos = VOLUME_STEPS[clickPos];
+ 
   if (newPos != current_volume) {
     current_volume = newPos;
-    Serial.printf("Volume: %d%%\n", current_volume);
+    Serial.printf("Volume: %d%%\r\n", current_volume);
+
+    // Persist volume to memory so it is remembered on boot
+    preferences.putInt("volume", current_volume);
 
     if (current_volume == 0) {
       turnOffRadio(false); // True off
