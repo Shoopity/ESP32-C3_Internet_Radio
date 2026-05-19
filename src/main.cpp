@@ -230,15 +230,19 @@ void cleanupAudio(bool includeI2S) {
     file = NULL;
   }
 
-  // 3. Stop and delete I2S output
-  // We've found that on ESP32-C3, it's safer to fully release the driver
-  // but we must give it a moment to 'breathe' before re-installing.
+  // 3. Stop and delete I2S output cleanly
   if (out) {
-    out->stop();
     if (includeI2S) {
+      // CRITICAL: DO NOT call out->stop()! Calling out->stop() sets i2sOn = false, 
+      // which causes the destructor ~AudioOutputI2S() to skip i2s_driver_uninstall().
+      // Deleting out directly with i2sOn == true ensures the driver is cleanly uninstalled.
       delete out;
       out = NULL;
       delay(50); // Critical: give hardware time to release I2S peripheral
+    } else {
+      // When keeping I2S alive (e.g. for transitioning to static/tuning), we also 
+      // do not call out->stop(). This keeps i2sOn = true so that a subsequent 
+      // generator.begin() does not attempt to re-install the already active I2S driver.
     }
   }
 }
