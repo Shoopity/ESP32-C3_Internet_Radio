@@ -53,6 +53,23 @@ float view_phase = 0.0f; // Persistent phase for smooth oscillation
 float last_drawn_angle = -1.0f;
 unsigned long display_update_timer = 0;
 
+// #define PIN_SW 10 // Encoder Switch pin (Optional: uncomment if wired)
+int last_volume_before_mute = 10;
+bool is_muted = false;
+
+// Custom subclass to fix a bug in the ESP8266Audio library where the AudioGeneratorMP3
+// constructor leaves several internal decoding pointers uninitialized. If begin() fails
+// before allocation, deleting the generator triggers a double-free crash.
+class SafeAudioGeneratorMP3 : public AudioGeneratorMP3 {
+public:
+  SafeAudioGeneratorMP3() : AudioGeneratorMP3() {
+    buff = nullptr;
+    stream = nullptr;
+    frame = nullptr;
+    synth = nullptr;
+  }
+};
+
 RotaryEncoder encoder(PIN_IN2, PIN_IN1, RotaryEncoder::LatchMode::FOUR3);
 
 AudioGenerator *decoder = NULL;
@@ -297,7 +314,7 @@ void turnOnRadio() {
   if (urlStr.indexOf("aac") >= 0 || urlStr.indexOf("wzph") >= 0) {
     decoder = new AudioGeneratorAAC();
   } else {
-    decoder = new AudioGeneratorMP3();
+    decoder = new SafeAudioGeneratorMP3();
   }
 
   Serial.printf("Starting stream: %s\r\n", target_url);
@@ -333,6 +350,9 @@ void setup() {
 
   // Setup BOOT button input
   pinMode(PIN_BOOT, INPUT_PULLUP);
+
+  // Setup Encoder SW pin (Optional: uncomment if wired)
+  // pinMode(PIN_SW, INPUT_PULLUP);
 
   // Setup Rotary Encoder
   attachInterrupt(digitalPinToInterrupt(PIN_IN1), checkPosition, CHANGE);
@@ -450,6 +470,11 @@ void loop() {
   int newPos = VOLUME_STEPS[clickPos];
  
   if (newPos != current_volume) {
+    // If we adjust the knob, we unmute automatically
+    if (is_muted && newPos > 0) {
+      is_muted = false;
+    }
+    
     current_volume = newPos;
     Serial.printf("Volume: %d%%\r\n", current_volume);
 
@@ -467,6 +492,52 @@ void loop() {
       out->SetGain(gain);
     }
   }
+
+  // 2b. Handle Optional Encoder Switch Mute (Optional: uncomment if wired)
+  /*
+  static bool sw_pressed = false;
+  static unsigned long last_sw_time = 0;
+  if (digitalRead(PIN_SW) == LOW) {
+    if (!sw_pressed && (millis() - last_sw_time > 200)) { // 200ms debounce
+      sw_pressed = true;
+      last_sw_time = millis();
+      if (is_muted) {
+        is_muted = false;
+        current_volume = last_volume_before_mute;
+        Serial.printf("Unmuted! Volume: %d%%\r\n", current_volume);
+        
+        // Restore encoder click position
+        int best_step = 2;
+        int min_diff = 999;
+        for (int i = 0; i <= 20; i++) {
+          int diff = abs(VOLUME_STEPS[i] - current_volume);
+          if (diff < min_diff) {
+            min_diff = diff;
+            best_step = i;
+          }
+        }
+        encoder.setPosition(best_step);
+        
+        if (!is_playing && !is_tuning && current_volume > 0) {
+          turnOnRadio();
+        } else if (out) {
+          float gain = (float)current_volume / 100.0 * 2.0;
+          out->SetGain(gain);
+        }
+      } else {
+        is_muted = true;
+        last_volume_before_mute = current_volume;
+        current_volume = 0;
+        Serial.println("Muted!");
+        
+        encoder.setPosition(0);
+        turnOffRadio(false); // Tear down stream completely
+      }
+    }
+  } else {
+    sw_pressed = false;
+  }
+  */
 
   // 3. Handle Audio State Machine
   if (is_playing) {
@@ -486,40 +557,38 @@ void loop() {
     }
 
     // 5. Non-Blocking Reconnect
-    if (millis() - reconnect_timer > 5000) {
-      Serial.println("Attempting to reconnect...");
+    static bool reconnecting = false;
+    static unsigned long last_wifi_check = 0;
 
-      static int failed_retries = 0;
-      // Check WiFi
-      if (WiFi.status() != WL_CONNECTED || failed_retries >= 3) {
-        if (failed_retries >= 3) {
-          Serial.println("Multiple retries failed. Forcing WiFi reset...");
-        } else {
-          Serial.println("WiFi dropped, reconnecting...");
-        }
+    if (WiFi.status() != WL_CONNECTED) {
+      if (!reconnecting) {
+        Serial.println("WiFi disconnected! Starting non-blocking reconnect...");
         WiFi.disconnect();
-        delay(1000); // Small block to let WiFi modem reset, static will pause
-                     // briefly
         WiFi.begin();
-        int retries = 0;
-        while (WiFi.status() != WL_CONNECTED && retries < 20) {
-          delay(500);
+        reconnecting = true;
+        last_wifi_check = millis();
+      } else {
+        // Print progress without blocking the audio static loops
+        if (millis() - last_wifi_check > 500) {
+          last_wifi_check = millis();
           Serial.print(".");
-          retries++;
         }
-        Serial.println();
-        failed_retries = 0;
+      }
+    } else {
+      if (reconnecting) {
+        Serial.println("\nWiFi Reconnected!");
+        reconnecting = false;
       }
 
-      // Rebuild stream
-      turnOnRadio();
+      // Reconnect to stream every 5s if we are connected to WiFi but still in static tuning mode
+      if (millis() - reconnect_timer > 5000) {
+        reconnect_timer = millis();
+        Serial.println("Attempting to reconnect stream...");
+        
+        turnOnRadio();
 
-      if (!is_playing) {
-        failed_retries++;
-        // turnOnRadio already dropped us back into is_tuning = true
-        reconnect_timer = millis(); // Reset timer for the next 5s wait
-      } else {
-        failed_retries = 0;
+        // If turnOnRadio succeeded, it sets is_playing=true and is_tuning=false.
+        // If it failed, it leaves is_tuning=true so we keep playing static and retry.
       }
     }
   }
