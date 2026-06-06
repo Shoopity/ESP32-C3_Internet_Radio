@@ -6,8 +6,8 @@
 #include <WiFi.h>
 
 // WiFi Credentials - PLEASE UPDATE THESE
-const char *ssid = "WOPR";
-const char *password = "Wouldyoulike2playagame?";
+const char *ssid = "";
+const char *password = "";
 
 // Radio Stream URL (Using HTTP for compatibility)
 const char *url = "http://das-edge63-live365-dal03.cdnstream.com/a43564";
