@@ -8,7 +8,8 @@
 #include <WiFi.h>
 #include <vector>
 
-const char *DEFAULT_URL = "http://das-edge63-live365-dal03.cdnstream.com/a43564";
+//const char *DEFAULT_URL = "http://das-edge63-live365-dal03.cdnstream.com/a43564";
+const char *DEFAULT_URL = "http://streaming.live365.com/a43564";
 const char *SETUP_AP_SSID = "ESP32-Radio-Setup";
 const char *SETUP_AP_PASSWORD = "radio1234";
 constexpr uint8_t BOOT_BUTTON_PIN = 9;
