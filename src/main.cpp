@@ -31,10 +31,12 @@ String wifiPassword;
 String stationList;
 uint32_t currentStation = 0;
 bool setupMode = false;
+bool webServerConfigured = false;
 
 void MDCallback(void *cbData, const char *type, bool isUnicode,
                 const char *string);
 void StatusCallback(void *cbData, int code, const char *string);
+void startSetupAccessPoint();
 
 std::vector<String> getStations() {
   std::vector<String> stations;
@@ -96,6 +98,8 @@ void redirectHome() {
 }
 
 void configureWebServer() {
+  if (webServerConfigured) return;
+
   server.on("/", HTTP_GET, []() {
     std::vector<String> stations = getStations();
     String page = F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -172,15 +176,61 @@ void configureWebServer() {
 
   server.onNotFound([]() { redirectHome(); });
   server.begin();
+  webServerConfigured = true;
 }
 
 void startSetupAccessPoint() {
-  setupMode = true;
+  if (setupMode) {
+    Serial.println("Setup access point is already active.");
+    return;
+  }
+
+  if (mp3 != nullptr && mp3->isRunning()) mp3->stop();
+  delete buff;
+  buff = nullptr;
+  delete file;
+  file = nullptr;
+
+  WiFi.disconnect(false, false);
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(SETUP_AP_SSID, SETUP_AP_PASSWORD);
-  Serial.printf("Setup AP started. Connect to %s (password: %s), then open http://192.168.4.1\n",
-                SETUP_AP_SSID, SETUP_AP_PASSWORD);
+  if (!WiFi.softAP(SETUP_AP_SSID, SETUP_AP_PASSWORD)) {
+    Serial.println("Error: Could not start the setup access point.");
+    return;
+  }
+
+  setupMode = true;
+  Serial.printf("Setup AP started. Connect to %s (password: %s), then open http://%s\n",
+                SETUP_AP_SSID, SETUP_AP_PASSWORD,
+                WiFi.softAPIP().toString().c_str());
   configureWebServer();
+}
+
+void processSerialCommand(String command) {
+  command.trim();
+  command.toLowerCase();
+
+  if (command == "ap" || command == "setup") {
+    Serial.println("Switching to setup access point...");
+    startSetupAccessPoint();
+  } else if (command == "help") {
+    Serial.println("Commands: ap (or setup) - disconnect from Wi-Fi and start setup AP; help - show commands");
+  } else if (!command.isEmpty()) {
+    Serial.printf("Unknown command: %s. Type help for commands.\n", command.c_str());
+  }
+}
+
+void handleSerialCommands() {
+  static String command;
+  while (Serial.available() > 0) {
+    char character = static_cast<char>(Serial.read());
+    if (character == '\r') continue;
+    if (character == '\n') {
+      processSerialCommand(command);
+      command = "";
+    } else if (command.length() < 32) {
+      command += character;
+    }
+  }
 }
 
 // Callback for ICY metadata
@@ -201,9 +251,10 @@ void StatusCallback(void *cbData, int code, const char *string) {
 void setup() {
   Serial.begin(115200);
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
-  bool forceSetupMode = digitalRead(BOOT_BUTTON_PIN) == LOW;
   delay(2000);
   Serial.println("\n\nESP32-C3 Internet Radio (ESP8266Audio) Starting...");
+  Serial.println("Type 'ap' in the serial monitor to switch to setup access point; type 'help' for commands.");
+  bool forceSetupMode = digitalRead(BOOT_BUTTON_PIN) == LOW;
 
   preferences.begin("radio", false);
   wifiSsid = preferences.getString("ssid", "");
@@ -243,6 +294,7 @@ void setup() {
 }
 
 void loop() {
+  handleSerialCommands();
   server.handleClient();
   if (mp3 != nullptr && mp3->isRunning()) {
     if (!mp3->loop()) {

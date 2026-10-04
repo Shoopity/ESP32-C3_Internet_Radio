@@ -32,7 +32,9 @@ New Codespaces install the PlatformIO extension, CLI, and project packages autom
 
 ## Configuration and Reset
 - On first boot, the radio starts the **ESP32-Radio-Setup** access point. Connect with password **radio1234**, then open `http://192.168.4.1`.
-- To force setup mode later, hold **BOOT** while powering on or resetting the board. If the saved Wi-Fi network cannot be reached for 20 seconds, setup mode starts automatically.
+- To switch to setup mode without clearing settings, open the VS Code Command Palette (`Ctrl+Shift+P`), run **PlatformIO: Serial Monitor**, set the baud rate to **115200** and line ending to **LF** or **CRLF**, then type `ap` and press Enter. `setup` is an alias; type `help` to list commands. The radio disconnects from Wi-Fi and starts its setup access point.
+- The BOOT button can also force setup mode, but do not hold it through reset or power-on: GPIO9 is used by the ESP32-C3 ROM to select its download mode. Reset the board normally, then hold **BOOT** during the firmware's first two seconds of startup.
+- If the saved Wi-Fi network cannot be reached for 20 seconds, setup mode starts automatically.
 - After connecting to Wi-Fi, open the radio's IP address (printed in the serial monitor) to change credentials, edit the list of up to 10 stream URLs, or select a station.
 - **Reset configuration** erases the saved Wi-Fi and station settings and reboots into setup mode. Settings are stored in ESP32 non-volatile storage and survive power loss.
 
