@@ -1,0 +1,18 @@
+{
+  "name": "ESP32-C3 Internet Radio",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12",
+      "installTools": "pipx"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "platformio.platformio-ide"
+      ]
+    }
+  },
+  "postCreateCommand": "pipx install platformio && PATH=\"$HOME/.local/bin:$PATH\" pio pkg install"
+}
