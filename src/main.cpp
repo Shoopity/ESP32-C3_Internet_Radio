@@ -4,6 +4,7 @@
 #include "AudioOutputI2S.h"
 #include <Arduino.h>
 #include <Preferences.h>
+#include <RotaryEncoder.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <vector>
@@ -16,9 +17,8 @@ constexpr uint8_t BOOT_BUTTON_PIN = 9;
 constexpr uint8_t ENCODER_CLK_PIN = 4;
 constexpr uint8_t ENCODER_DT_PIN = 5;
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
-constexpr float VOLUME_MIN = 0.0f;
-constexpr float VOLUME_MAX = 1.0f;
-constexpr float VOLUME_STEP = 0.05f;
+constexpr uint8_t VOLUME_STEP = 5;
+constexpr uint8_t VOLUME_MAX = 100;
 
 // I2S Pins for NS4168
 #define I2S_BCLK 1
@@ -37,7 +37,9 @@ String stationList;
 uint32_t currentStation = 0;
 bool setupMode = false;
 bool webServerConfigured = false;
-float currentVolume = 0.5f;
+uint8_t currentVolume = 25;
+RotaryEncoder encoder(ENCODER_DT_PIN, ENCODER_CLK_PIN,
+                      RotaryEncoder::LatchMode::FOUR3);
 
 void MDCallback(void *cbData, const char *type, bool isUnicode,
                 const char *string);
@@ -45,33 +47,26 @@ void StatusCallback(void *cbData, int code, const char *string);
 void startSetupAccessPoint();
 void handleEncoder();
 
-void updateVolume(float delta) {
-  currentVolume = constrain(currentVolume + delta, VOLUME_MIN, VOLUME_MAX);
-  if (out != nullptr) {
-    out->SetGain(currentVolume);
-  }
-  Serial.printf("Volume: %.2f\n", currentVolume);
-}
-
 void handleEncoder() {
-  static uint8_t lastClkState = HIGH;
-  static uint32_t lastEncoderEventMs = 0;
-
-  if (millis() - lastEncoderEventMs < 25) return;
-
-  uint8_t clkState = digitalRead(ENCODER_CLK_PIN);
-  uint8_t dtState = digitalRead(ENCODER_DT_PIN);
-
-  if (clkState != lastClkState) {
-    if (clkState != dtState) {
-      updateVolume(VOLUME_STEP);
-    } else {
-      updateVolume(-VOLUME_STEP);
-    }
-    lastEncoderEventMs = millis();
+  encoder.tick();
+  int position = encoder.getPosition();
+  if (position < 0) {
+    encoder.setPosition(0);
+    position = 0;
+  } else if (position > VOLUME_MAX / VOLUME_STEP) {
+    encoder.setPosition(VOLUME_MAX / VOLUME_STEP);
+    position = VOLUME_MAX / VOLUME_STEP;
   }
 
-  lastClkState = clkState;
+  uint8_t newVolume = position * VOLUME_STEP;
+  if (newVolume == currentVolume) return;
+
+  currentVolume = newVolume;
+  preferences.putUChar("volume", currentVolume);
+  if (out != nullptr) {
+    out->SetGain(static_cast<float>(currentVolume) / 50.0f);
+  }
+  Serial.printf("Volume: %u%%\n", currentVolume);
 }
 
 std::vector<String> getStations() {
@@ -299,6 +294,9 @@ void setup() {
   wifiPassword = preferences.getString("password", "");
   stationList = preferences.getString("stations", DEFAULT_URL);
   currentStation = preferences.getUInt("current", 0);
+  currentVolume = preferences.getUChar("volume", 25);
+  if (currentVolume > VOLUME_MAX) currentVolume = 25;
+  encoder.setPosition(currentVolume / VOLUME_STEP);
 
   if (forceSetupMode || wifiSsid.isEmpty()) {
     startSetupAccessPoint();
@@ -325,7 +323,7 @@ void setup() {
   // Setup I2S Output
   out = new AudioOutputI2S();
   out->SetPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  out->SetGain(currentVolume);
+  out->SetGain(static_cast<float>(currentVolume) / 50.0f);
 
   configureWebServer();
   startStream(currentStation);

@@ -48,7 +48,7 @@ These are connected as follows:
 | NS4168 amplifier | V (5V) | 5V | Power rail |
 | NS4168 amplifier | G (GND) | GND | Common ground |
 | KY040 encoder | GND | GND | Encoder ground |
-| KY040 encoder | +5V | 5V | Encoder power |
+| KY040 encoder | VCC | 3V3 | Power from the ESP32-C3 3.3V rail |
 
 The firmware also uses the BOOT button on the ESP32-C3 for forced setup mode:
 
@@ -65,7 +65,7 @@ The firmware configures the I2S amplifier with:
 ```cpp
 out = new AudioOutputI2S();
 out->SetPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-out->SetGain(currentVolume);
+out->SetGain(static_cast<float>(currentVolume) / 50.0f);
 ```
 
 This means the amplified audio is sent from the ESP32-C3 to the NS4168 module using the standard I2S interface:
@@ -74,7 +74,7 @@ This means the amplified audio is sent from the ESP32-C3 to the NS4168 module us
 - Word select / LR clock: GPIO 2
 - Serial audio data: GPIO 3
 
-At the same time, the radio reads the KY040 encoder state in `handleEncoder()` and adjusts the volume in small steps. The volume is clamped between 0.0 and 1.0, with a fine step of 0.05 per detent transition.
+At the same time, the radio reads the KY040 encoder state in `handleEncoder()` and adjusts the volume in 5% steps from 0% to 100%. The setting is saved in ESP32 non-volatile preferences and restored on reboot. The default 25% volume maps to an audio gain of 0.5.
 
 ## Wi-Fi and setup behavior
 
@@ -128,7 +128,7 @@ From [platformio.ini](platformio.ini):
 - Framework: Arduino
 - Monitor speed: `115200`
 - Upload speed: `115200`
-- Library: `earlephilhower/ESP8266Audio@1.9.7`
+- Libraries: `earlephilhower/ESP8266Audio@1.9.7`, `mathertel/RotaryEncoder@^1.5.3`
 
 ### Main libraries used
 
@@ -136,6 +136,7 @@ From [platformio.ini](platformio.ini):
 - `WiFi` for network connectivity
 - `WebServer` for the local configuration page
 - `Preferences` for persistent storage
+- `RotaryEncoder` for KY040 quadrature decoding
 - `AudioGeneratorMP3` to decode the stream
 - `AudioOutputI2S` to send audio to the amplifier
 
@@ -168,7 +169,7 @@ ESP32-C3 Super Mini
   GPIO 9 --------------> BOOT button input (setup mode)
 
 KY040 encoder
-  +5V -----------------> 5V
+  VCC -----------------> 3V3
   GND -----------------> GND
   CLK -----------------> GPIO 4
   DT -----------------> GPIO 5
