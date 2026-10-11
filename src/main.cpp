@@ -13,7 +13,12 @@ const char *DEFAULT_URL = "http://streaming.live365.com/a43564";
 const char *SETUP_AP_SSID = "ESP32-Radio-Setup";
 const char *SETUP_AP_PASSWORD = "radio1234";
 constexpr uint8_t BOOT_BUTTON_PIN = 9;
+constexpr uint8_t ENCODER_CLK_PIN = 4;
+constexpr uint8_t ENCODER_DT_PIN = 5;
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
+constexpr float VOLUME_MIN = 0.0f;
+constexpr float VOLUME_MAX = 1.0f;
+constexpr float VOLUME_STEP = 0.05f;
 
 // I2S Pins for NS4168
 #define I2S_BCLK 1
@@ -32,11 +37,42 @@ String stationList;
 uint32_t currentStation = 0;
 bool setupMode = false;
 bool webServerConfigured = false;
+float currentVolume = 0.5f;
 
 void MDCallback(void *cbData, const char *type, bool isUnicode,
                 const char *string);
 void StatusCallback(void *cbData, int code, const char *string);
 void startSetupAccessPoint();
+void handleEncoder();
+
+void updateVolume(float delta) {
+  currentVolume = constrain(currentVolume + delta, VOLUME_MIN, VOLUME_MAX);
+  if (out != nullptr) {
+    out->SetGain(currentVolume);
+  }
+  Serial.printf("Volume: %.2f\n", currentVolume);
+}
+
+void handleEncoder() {
+  static uint8_t lastClkState = HIGH;
+  static uint32_t lastEncoderEventMs = 0;
+
+  if (millis() - lastEncoderEventMs < 25) return;
+
+  uint8_t clkState = digitalRead(ENCODER_CLK_PIN);
+  uint8_t dtState = digitalRead(ENCODER_DT_PIN);
+
+  if (clkState != lastClkState) {
+    if (clkState != dtState) {
+      updateVolume(VOLUME_STEP);
+    } else {
+      updateVolume(-VOLUME_STEP);
+    }
+    lastEncoderEventMs = millis();
+  }
+
+  lastClkState = clkState;
+}
 
 std::vector<String> getStations() {
   std::vector<String> stations;
@@ -251,6 +287,8 @@ void StatusCallback(void *cbData, int code, const char *string) {
 void setup() {
   Serial.begin(115200);
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(ENCODER_CLK_PIN, INPUT_PULLUP);
+  pinMode(ENCODER_DT_PIN, INPUT_PULLUP);
   delay(2000);
   Serial.println("\n\nESP32-C3 Internet Radio (ESP8266Audio) Starting...");
   Serial.println("Type 'ap' in the serial monitor to switch to setup access point; type 'help' for commands.");
@@ -287,7 +325,7 @@ void setup() {
   // Setup I2S Output
   out = new AudioOutputI2S();
   out->SetPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  out->SetGain(0.5); // Set initial volume (0.0 to 4.0)
+  out->SetGain(currentVolume);
 
   configureWebServer();
   startStream(currentStation);
@@ -295,6 +333,7 @@ void setup() {
 
 void loop() {
   handleSerialCommands();
+  handleEncoder();
   server.handleClient();
   if (mp3 != nullptr && mp3->isRunning()) {
     if (!mp3->loop()) {
