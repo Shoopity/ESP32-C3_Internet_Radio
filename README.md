@@ -38,6 +38,15 @@ New Codespaces install the PlatformIO extension, CLI, and project packages autom
 - After connecting to Wi-Fi, open the radio's IP address (printed in the serial monitor) to change credentials, edit the list of up to 10 stream URLs, or select a station.
 - **Reset configuration** erases the saved Wi-Fi and station settings and reboots into setup mode. Settings are stored in ESP32 non-volatile storage and survive power loss.
 
+## Wireless Firmware Updates
+After installing a firmware build with OTA support over USB once, later updates can be done from a browser on the same Wi-Fi network:
+
+1. Build the firmware with PlatformIO. The image is `.pio/build/esp32-c3-super-mini/firmware.bin`.
+2. Open the radio's IP address and choose **Upload firmware**.
+3. When prompted, enter `radio` as the username and the saved Wi-Fi password as the password, then select `firmware.bin` and upload it.
+
+The radio uses two OTA firmware slots and reboots after a successful update. Audio playback pauses during the upload and resumes if the upload fails. OTA is available only while connected to the saved Wi-Fi network with a non-empty password; the setup access point does not accept firmware uploads. The browser update uses HTTP Basic authentication without TLS, so only perform updates on a trusted local network.
+
 ## Special Note on Flashing
 If you encounter `No serial data received` errors during upload:
 - Hold the **BOOT** button.
